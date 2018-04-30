@@ -1,99 +1,49 @@
-dist:             trusty
-sudo:             required
-language:         php
-
-addons:
-  apt:
-      packages:
-        # Dependencies for Chrome.
-        - libappindicator1
-        - fonts-liberation
-  hosts:
-    - govcms8.local
-
-branches:
-  except:
-     - master
-
-cache:
-  bundler:        true
-  apt:            true
-  directories:
-    - "$HOME/.composer/cache"
-    - "$HOME/.drush/cache"
-    - "$HOME/.npm"
+language: php
+dist: trusty
+sudo: false
 
 php:
+  - 5.6
+  - 7.0
   - 7.1
   - 7.2
 
+env:
+  global:
+    - SIMPLETEST_DB=sqlite://tmp/site.sqlite
+    - SIMPLETEST_BASE_URL="http://127.0.0.1:8080"
+  matrix:
+    - RELEASE=stable COMPOSER_CHANNEL=stable
+    - RELEASE=dev COMPOSER_CHANNEL=stable
+    - RELEASE=stable COMPOSER_CHANNEL=snapshot
+
 matrix:
-  allow_failures:
-  - php:          7.2
-  fast_finish:    true
+  exclude:
+    - php: 7.2
+      env: RELEASE=stable COMPOSER_CHANNEL=stable
+    - php: 7.2
+      env: RELEASE=stable COMPOSER_CHANNEL=snapshot
 
 before_install:
-  # Tweak PHP configuration.
   - echo 'sendmail_path = /bin/true' >> ~/.phpenv/versions/$(phpenv version-name)/etc/conf.d/travis.ini
-  - echo 'max_execution_time = 180' >> govcms.php.ini;
-  - echo 'sendmail_path = /bin/true' >> govcms.php.ini;
-  - phpenv config-add govcms.php.ini
   - phpenv config-rm xdebug.ini
-  - phpenv rehash
-
-  # Composer
-  - composer self-update
+  - composer --verbose self-update --$COMPOSER_CHANNEL
   - composer --version
 
-  # Initialize xvfb (see https://docs.travis-ci.com/user/gui-and-headless-browsers)
-  - export DISPLAY=:99.0
-  - sh -e /etc/init.d/xvfb start
-  - sleep 3
-
-    # Download Chrome Driver
-  - LATEST_CHROMEDRIVER=$(wget -q -O - http://chromedriver.storage.googleapis.com/LATEST_RELEASE)
-  - wget http://chromedriver.storage.googleapis.com/$LATEST_CHROMEDRIVER/chromedriver_linux64.zip
-  - unzip chromedriver_linux64.zip
-  - chmod +x chromedriver
-  - mkdir -p $HOME/.composer/vendor/bin
-  - mv -f chromedriver $HOME/.composer/vendor/bin/
-  - rm chromedriver_linux64.zip
-
-  # Update Chrome.
-  - export CHROME_BIN=/usr/bin/google-chrome
-  - wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-  - sudo dpkg -i google-chrome-stable_current_amd64.deb
-  - rm google-chrome-stable_current_amd64.deb
-  - google-chrome --version
-
 install:
-  # Add Composer's local bin directory to the PATH.
-  - export PATH="$HOME/.composer/vendor/bin:$TRAVIS_BUILD_DIR/bin:$PATH"
-
-  # composer install should fail on bad patches.
-  - export COMPOSER_EXIT_ON_PATCH_FAILURE=1
-
-  # Create the MySQL database and add a user for testing.
-  - mysql -u root -e "CREATE DATABASE govcms8; CREATE USER 'govcms'@'localhost' IDENTIFIED BY 'govcms'; GRANT ALL ON govcms8.* TO 'govcms'@'localhost';"
-
-  # Validate composer.json file.
-  - composer validate composer.json --no-check-all --ansi --no-interaction
-
-  # Install govCMS codes.
-  - travis_retry composer --verbose install
-
-  # Install govCMS site.
-  - phing site:install -Ddb.database=govcms8 -Ddb.user=govcms -Ddb.password=govcms -Ddb.host=127.0.0.1 -Durl==http://127.0.0.1:8080
-
-before_script:
-  - drush runserver --default-server=builtin 8080 &>/dev/null &
-  - cd $TRAVIS_BUILD_DIR
-  - jdk_switcher use oraclejdk8
-  # Start Selenium and dump its ginormous log into a temporary file.
-  - mkdir tmp
-  - selenium-server-standalone -port 4444 -log tmp/selenium2.log &
-  - sleep 5
+  - composer --verbose validate
+  - composer --verbose install
 
 script:
-  - phing test:phpunit
-  - behat --strict --stop-on-failure --config tests/behat/behat.travis.yml
+  - if [[ $RELEASE = dev ]]; then composer --verbose remove --no-update drupal/console; fi;
+  - if [[ $RELEASE = dev ]]; then composer --verbose require --no-update drupal/core:8.6.x-dev webflo/drupal-core-require-dev:8.6.x-dev; fi;
+  - if [[ $RELEASE = dev ]]; then composer --verbose update; fi;
+  - cd $TRAVIS_BUILD_DIR/web
+  - ./../vendor/bin/drush site-install --verbose --yes --db-url=sqlite://tmp/site.sqlite
+  - ./../vendor/bin/drush runserver $SIMPLETEST_BASE_URL &
+  - until curl -s $SIMPLETEST_BASE_URL; do true; done > /dev/null
+  # Skip core/tests/Drupal/Tests/ComposerIntegrationTest.php because web/ has no composer.json
+  # Ignore PageCache group temporarily, @see https://www.drupal.org/node/2770673
+  - ./../vendor/bin/phpunit -c core --testsuite unit --exclude-group Composer,DependencyInjection,PageCache
+  - ./../vendor/bin/drush
+  - if [[ $RELEASE = stable ]]; then ./../vendor/bin/drupal; fi;

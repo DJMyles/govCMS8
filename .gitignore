@@ -2,9 +2,6 @@
 build.properties
 tests/screenshots/*
 
-# Ignore drupal core.
-docroot/
-
 # Ignore build artifacts
 /deploy
 bin/*
